@@ -13,6 +13,7 @@ function App() {
     if (tokenGuardado) setToken(tokenGuardado);
   }, []);
 
+  // AQUÍ ESTÁ EL 'async' NECESARIO:
   const procesarFormulario = async (endpoint) => {
     setMensaje('Enviando...');
     try {
