@@ -1,11 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from './supabaseClient';
+
+// Importación de los componentes individuales por rol
+import SuperadminDashboard from './components/dashboards/SuperadminDashboard';
+import AdminLigaDashboard from './components/dashboards/AdminLigaDashboard';
+import ArbitroDashboard from './components/dashboards/ArbitroDashboard';
+import DelegadoDashboard from './components/dashboards/DelegadoDashboard';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
 function App() {
-  const [vista, setVista] = useState('inicio');
-  const [paso, setPaso] = useState(1);
+  const [vista, setVista] = useState('inicio'); // 'inicio', 'login', 'dashboard'
+  const [paso, setPaso] = useState(1);         // 1: Credenciales, 2: OTP (Superadmin)
   const [partidos, setPartidos] = useState([]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -13,7 +19,11 @@ function App() {
   const [mensaje, setMensaje] = useState('');
   const [usuario, setUsuario] = useState(null);
   const [rolUsuario, setRolUsuario] = useState('');
+  const [cargando, setCargando] = useState(true);
 
+  const enProcesoLoginRef = useRef(false);
+
+  // 1. Cargar partidos activos para la Landing Page pública
   useEffect(() => {
     if (vista === 'inicio') {
       fetch(`${API_URL}/partidos-activos`)
@@ -23,15 +33,75 @@ function App() {
     }
   }, [vista]);
 
+  // 2. Consulta de rol en PostgreSQL (public.usuarios)
+  const obtenerRolBD = async (userId) => {
+    try {
+      const { data: datosBD, error } = await supabase
+        .from('usuarios')
+        .select('rol')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('Error leyendo rol en BD:', error);
+        return 'Usuario';
+      }
+      return datosBD?.rol || 'Usuario';
+    } catch (err) {
+      console.error('Excepción leyendo rol:', err);
+      return 'Usuario';
+    }
+  };
+
+  // 3. Persistencia de Sesión
+  useEffect(() => {
+    const verificarSesionExistente = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      if (session?.user && !enProcesoLoginRef.current) {
+        const rolBD = await obtenerRolBD(session.user.id);
+        setRolUsuario(rolBD);
+        setUsuario(session.user);
+        setVista('dashboard');
+      }
+      setCargando(false);
+    };
+
+    verificarSesionExistente();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (enProcesoLoginRef.current) return;
+
+        if (event === 'SIGNED_IN' && session?.user) {
+          const rolBD = await obtenerRolBD(session.user.id);
+          setRolUsuario(rolBD);
+          setUsuario(session.user);
+          setVista('dashboard');
+        } else if (event === 'SIGNED_OUT') {
+          setUsuario(null);
+          setRolUsuario('');
+          setVista('inicio');
+        }
+      }
+    );
+
+    return () => {
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // 4. Manejo de Login condicional
   const manejarLogin = async (e) => {
     e.preventDefault();
     setMensaje('');
 
     const emailLimpio = email.trim().toLowerCase();
 
-    // PASO 1: Validar credenciales y consultar la tabla public.usuarios en PostgreSQL
+    // PASO 1: Validar credenciales
     if (paso === 1) {
       setMensaje('Validando credenciales...');
+      enProcesoLoginRef.current = true;
 
       const { data, error: errorPassword } = await supabase.auth.signInWithPassword({
         email: emailLimpio,
@@ -39,28 +109,15 @@ function App() {
       });
 
       if (errorPassword) {
+        enProcesoLoginRef.current = false;
         setMensaje(`Credenciales incorrectas: ${errorPassword.message}`);
         return;
       }
 
       setMensaje('Consultando rol en la base de datos...');
-
-      // Consulta directa a la tabla public.usuarios
-      const { data: datosBD, error: errorBD } = await supabase
-        .from('usuarios')
-        .select('rol')
-        .eq('id', data.user.id)
-        .single();
-
-      if (errorBD) {
-        setMensaje(`Error al leer rol en la base de datos: ${errorBD.message}`);
-        return;
-      }
-
-      const rolBD = datosBD?.rol || 'Usuario';
+      const rolBD = await obtenerRolBD(data.user.id);
       setRolUsuario(rolBD);
 
-      // Evaluación del rol
       if (rolBD.toLowerCase() === 'superadmin') {
         await supabase.auth.signOut();
 
@@ -71,13 +128,14 @@ function App() {
         });
 
         if (errorOtp) {
+          enProcesoLoginRef.current = false;
           setMensaje(`Error al enviar el código: ${errorOtp.message}`);
         } else {
           setMensaje('Código de 6 dígitos enviado a tu correo.');
           setPaso(2);
         }
       } else {
-        // Roles regulares ingresan directamente
+        enProcesoLoginRef.current = false;
         setUsuario(data.user);
         setVista('dashboard');
         setMensaje('¡Bienvenido/a! Sesión iniciada.');
@@ -85,7 +143,7 @@ function App() {
       return;
     }
 
-    // PASO 2: Verificación OTP exclusiva para Superadmin
+    // PASO 2: OTP exclusivo para Superadmin
     if (paso === 2) {
       setMensaje('Verificando código...');
 
@@ -98,21 +156,34 @@ function App() {
       if (error) {
         setMensaje(`Código inválido o expirado: ${error.message}`);
       } else {
-        const { data: datosBD } = await supabase
-          .from('usuarios')
-          .select('rol')
-          .eq('id', data.user.id)
-          .single();
+        enProcesoLoginRef.current = false;
+        const rolBD = await obtenerRolBD(data.user.id);
 
-        setRolUsuario(datosBD?.rol || 'Superadmin');
+        setRolUsuario(rolBD);
         setUsuario(data.user);
         setVista('dashboard');
-        setMensaje('¡Autenticación de Superadmin completada!');
+        setMensaje('¡Autenticación completada!');
       }
     }
   };
 
+  // Petición auxiliar para enviar el evento de Login a public.audit_logs
+  const registrarLoginAudit = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      fetch(`${API_URL}/superadmin/log-evento`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ accion: 'LOGIN_EXITOSO', tabla: 'auth' })
+      }).catch(() => {});
+    }
+  };
+
   const cerrarSesion = async () => {
+    enProcesoLoginRef.current = false;
     await supabase.auth.signOut();
     setUsuario(null);
     setRolUsuario('');
@@ -123,25 +194,44 @@ function App() {
     setMensaje('');
   };
 
-  const obtenerEtiquetaRol = (rol) => {
-    switch (rol?.toLowerCase()) {
+  // Selector dinámico del componente Dashboard
+  const renderizarDashboard = () => {
+    const rol = rolUsuario?.toLowerCase();
+
+    switch (rol) {
       case 'superadmin':
-        return '🛡️ Superadministrador Global';
+        return <SuperadminDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       case 'administrador de liga':
-        return '🏆 Administrador de Liga';
+        return <AdminLigaDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       case 'arbitro/anotador':
       case 'árbitro / anotador':
-        return '📋 Árbitro / Anotador';
+        return <ArbitroDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       case 'delegado de equipo':
-        return '⚽ Delegado de Equipo';
+        return <DelegadoDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       default:
-        return `👤 ${rol || 'Usuario'}`;
+        return (
+          <div style={{ textAlign: 'center', padding: '20px' }}>
+            <h3>Bienvenido/a al Panel General</h3>
+            <p>Usuario: {usuario?.email}</p>
+            <p>Rol: {rolUsuario || 'Sin rol asignado'}</p>
+            <button onClick={cerrarSesion}>Cerrar Sesión</button>
+          </div>
+        );
     }
   };
 
+  if (cargando) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', fontFamily: 'sans-serif' }}>
+        <h3>🥎 Cargando sistema de Bolas Criollas...</h3>
+      </div>
+    );
+  }
+
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '600px', margin: '0 auto' }}>
-      <nav style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', borderBottom: '1px solid #ccc', paddingBottom: '10px' }}>
+    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto' }}>
+      {/* Barra de navegación pública */}
+      <nav style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #ccc', paddingBottom: '10px' }}>
         <h2>🥎 Bolas Criollas</h2>
         {vista !== 'dashboard' && (
           <button onClick={() => {
@@ -154,12 +244,12 @@ function App() {
         )}
       </nav>
 
-      {/* Vista de Inicio */}
+      {/* Landing Page (Pública) */}
       {vista === 'inicio' && (
         <div>
-          <h3>Partidos Activos</h3>
+          <h3>Partidos en Vivo y Resultados</h3>
           {partidos.length === 0 ? (
-            <p>No hay partidos en vivo en este momento.</p>
+            <p>No hay partidos en curso en este momento.</p>
           ) : (
             <ul>
               {partidos.map((p) => (
@@ -170,7 +260,7 @@ function App() {
         </div>
       )}
 
-      {/* Vista de Login */}
+      {/* Formulario de Inicio de Sesión */}
       {vista === 'login' && (
         <div style={{ maxWidth: '350px', margin: '0 auto' }}>
           <h3>
@@ -201,7 +291,7 @@ function App() {
             {paso === 2 && (
               <>
                 <p style={{ fontSize: '0.85em', color: '#555', margin: 0 }}>
-                  Ingresa el código de 6 dígitos enviado a <strong>{email}</strong>
+                  Ingresa el código enviado a <strong>{email}</strong>
                 </p>
                 <input
                   type="text"
@@ -211,13 +301,17 @@ function App() {
                   maxLength={6}
                   required
                 />
-                <button type="submit">Validar Código e Iniciar Sesión</button>
+                <button type="submit">Validar e Iniciar Sesión</button>
                 <button 
                   type="button" 
-                  onClick={() => setPaso(1)} 
+                  onClick={() => {
+                    enProcesoLoginRef.current = false;
+                    setPaso(1);
+                    setMensaje('');
+                  }} 
                   style={{ background: '#eee', color: '#333' }}
                 >
-                  Volver a credenciales
+                  Volver
                 </button>
               </>
             )}
@@ -231,16 +325,8 @@ function App() {
         </div>
       )}
 
-      {/* Vista de Dashboard Protegida */}
-      {vista === 'dashboard' && (
-        <div>
-          <h3>Bienvenido/a al Panel de Control</h3>
-          <p>Sesión activa: <strong>{usuario?.email}</strong></p>
-          <p>Rol (Base de Datos): <strong>{obtenerEtiquetaRol(rolUsuario)}</strong></p>
-          <hr style={{ margin: '15px 0', borderColor: '#eee' }} />
-          <button onClick={cerrarSesion}>Cerrar Sesión</button>
-        </div>
-      )}
+      {/* Vista de Dashboard Específica según Rol */}
+      {vista === 'dashboard' && renderizarDashboard()}
     </div>
   );
 }
