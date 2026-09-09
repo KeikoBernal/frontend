@@ -16,7 +16,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
 
   const [filtroPeriodo, setFiltroPeriodo] = useState('todos');
 
-  // Modales y Ediciones
+  // Modales, Detalles y Ediciones
+  const [ligaDetalle, setLigaDetalle] = useState(null); // NUEVO ESTADO: Para "Ver Información"
   const [ligaEditando, setLigaEditando] = useState(null);
   const [userEditando, setUserEditando] = useState(null);
 
@@ -24,9 +25,13 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
   const [itemEliminar, setItemEliminar] = useState(null); // { tipo: 'liga' | 'usuario', id: string, nombre: string }
   const [claveConfirmacion, setClaveConfirmacion] = useState('');
 
-  // Formularios
-  const [formLiga, setFormLiga] = useState({ nombre: '', responsable_nombre: '', responsable_telefono: '', responsable_email: '' });
-  const [formUser, setFormUser] = useState({ nombre: '', apellido: '', cedula: '', email: '', rol: 'administrador de liga', organizacion_id: '' });
+  // Formularios (Se agregan los campos faltantes para la creación automática del responsable)
+  const [formLiga, setFormLiga] = useState({ 
+    nombre: '', responsable_nombre: '', responsable_apellido: '', responsable_cedula: '', responsable_telefono: '', responsable_email: '' 
+  });
+  const [formUser, setFormUser] = useState({ 
+    nombre: '', apellido: '', cedula: '', email: '', rol: 'administrador de liga', organizacion_id: '' 
+  });
   const [formNotif, setFormNotif] = useState({
     tipo_destino: 'todos',
     organizacion_id: '',
@@ -124,10 +129,13 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
   const guardarLiga = async (e) => {
     e.preventDefault();
     const res = await fetchConToken('/ligas', { method: 'POST', body: JSON.stringify(formLiga) });
+    const data = await res.json();
     if (res.ok) {
-      setMensaje('Liga creada con éxito.');
-      setFormLiga({ nombre: '', responsable_nombre: '', responsable_telefono: '', responsable_email: '' });
+      setMensaje(data.mensaje); // Mostrará la contraseña autogenerada
+      setFormLiga({ nombre: '', responsable_nombre: '', responsable_apellido: '', responsable_cedula: '', responsable_telefono: '', responsable_email: '' });
       cargarDatosPestana();
+    } else {
+      setMensaje(`Error: ${data.error}`);
     }
   };
 
@@ -138,6 +146,15 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
       setMensaje('Liga actualizada.');
       setLigaEditando(null);
       cargarDatosPestana();
+    }
+  };
+
+  const verInformacionLiga = async (id) => {
+    const res = await fetchConToken(`/ligas/${id}/detalle`);
+    if (res.ok) {
+      setLigaDetalle(await res.json());
+    } else {
+      setMensaje('Error al obtener la información detallada de la liga.');
     }
   };
 
@@ -201,6 +218,7 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
       setMensaje(data.mensaje);
       setItemEliminar(null);
       setClaveConfirmacion('');
+      if (ligaDetalle?.liga?.id === itemEliminar.id) setLigaDetalle(null);
       cargarDatosPestana();
     } else {
       setMensaje(`Error al eliminar: ${data.error}`);
@@ -241,7 +259,7 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
         {['metricas', 'ligas', 'usuarios', 'notificaciones', 'bitacora'].map((p) => (
           <button
             key={p}
-            onClick={() => setPestana(p)}
+            onClick={() => { setPestana(p); setLigaDetalle(null); }}
             style={{
               padding: '8px 14px',
               cursor: 'pointer',
@@ -267,7 +285,7 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
           <div style={{ background: '#fff', padding: '25px', borderRadius: '8px', maxWidth: '400px', width: '90%', color: '#333' }}>
             <h3 style={{ marginTop: 0, color: '#C53030' }}>⚠️ Confirmar Eliminación</h3>
             <p>
-              Estás a punto de eliminar {itemEliminar.tipo === 'liga' ? 'la liga' : 'al usuario'}: <strong>{itemEliminar.nombre}</strong>.
+              Estás a punto de eliminar {itemEliminar.tipo === 'liga' ? 'la liga (y en cascada todos sus usuarios, equipos y partidos)' : 'al usuario'}: <strong>{itemEliminar.nombre}</strong>.
             </p>
             <p style={{ fontSize: '0.85em', color: '#666' }}>
               Esta acción no se puede deshacer. Ingresa tu contraseña de Superadmin para autorizar la operación.
@@ -396,58 +414,109 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
         </div>
       )}
 
-      {/* LIGAS CON ELIMINACIÓN */}
+      {/* LIGAS CON ELIMINACIÓN Y DETALLES */}
       {pestana === 'ligas' && (
         <div>
-          <h3>{ligaEditando ? '✏️ Editar Liga' : '🏆 Registrar Nueva Liga'}</h3>
-          <form onSubmit={ligaEditando ? actualizarLiga : guardarLiga} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
-            <input type="text" placeholder="Nombre Liga" value={ligaEditando ? ligaEditando.nombre : formLiga.nombre} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, nombre: e.target.value}) : setFormLiga({...formLiga, nombre: e.target.value})} required />
-            <input type="text" placeholder="Responsable" value={ligaEditando ? ligaEditando.responsable_nombre : formLiga.responsable_nombre} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_nombre: e.target.value}) : setFormLiga({...formLiga, responsable_nombre: e.target.value})} required />
-            <input type="text" placeholder="Teléfono" value={ligaEditando ? ligaEditando.responsable_telefono : formLiga.responsable_telefono} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_telefono: e.target.value}) : setFormLiga({...formLiga, responsable_telefono: e.target.value})} required />
-            <input type="email" placeholder="Correo" value={ligaEditando ? ligaEditando.responsable_email : formLiga.responsable_email} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_email: e.target.value}) : setFormLiga({...formLiga, responsable_email: e.target.value})} required />
-            
-            {ligaEditando && (
-              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input type="checkbox" checked={ligaEditando.estado_activa} onChange={(e) => setLigaEditando({...ligaEditando, estado_activa: e.target.checked})} />
-                Liga Activa
-              </label>
-            )}
+          {ligaDetalle ? (
+            <div style={{ background: '#FFF', border: '1px solid #CBD5E0', padding: '20px', borderRadius: '6px' }}>
+              <button onClick={() => setLigaDetalle(null)} style={{ marginBottom: '15px', padding: '6px 12px', cursor: 'pointer' }}>← Volver al Listado de Ligas</button>
+              
+              <h2>📊 Información Detallada: {ligaDetalle.liga.nombre}</h2>
+              <p><strong>Administrador:</strong> {ligaDetalle.liga.responsable_nombre} ({ligaDetalle.liga.responsable_email}) | <strong>Teléfono:</strong> {ligaDetalle.liga.responsable_telefono || 'N/A'}</p>
 
-            <div style={{ gridColumn: 'span 2', display: 'flex', gap: '10px' }}>
-              <button type="submit">{ligaEditando ? 'Guardar Cambios' : 'Registrar Liga'}</button>
-              {ligaEditando && <button type="button" onClick={() => setLigaEditando(null)}>Cancelar</button>}
+              <h4 style={{ marginTop: '20px', color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>👥 Usuarios Asociados ({ligaDetalle.usuarios.length})</h4>
+              <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                {ligaDetalle.usuarios.map(u => <li key={u.id}>{u.nombre} {u.apellido} - <strong>{u.rol}</strong> ({u.email})</li>)}
+              </ul>
+
+              <h4 style={{ marginTop: '20px', color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>🛡️ Equipos Registrados ({ligaDetalle.equipos.length})</h4>
+              <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                {ligaDetalle.equipos.map(eq => <li key={eq.id}><strong>{eq.nombre}</strong> ({eq.categoria} - {eq.tipo_genero})</li>)}
+              </ul>
+
+              <h4 style={{ marginTop: '20px', color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>🏃‍♂️ Jugadores ({ligaDetalle.jugadores.length})</h4>
+              <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                {ligaDetalle.jugadores.map(j => <li key={j.id}>{j.nombre} {j.apellido} (Dorsal #{j.numero_dorsal}) - Equipo: {j.equipo_nombre}</li>)}
+              </ul>
+
+              <div style={{ display: 'flex', gap: '20px', marginTop: '20px' }}>
+                <div>
+                  <h4 style={{ color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>🏟️ Sedes ({ligaDetalle.sedes.length})</h4>
+                  <ul style={{ margin: 0, paddingLeft: '20px' }}>{ligaDetalle.sedes.map(s => <li key={s.id}>{s.nombre}</li>)}</ul>
+                </div>
+                <div>
+                  <h4 style={{ color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>🏆 Torneos ({ligaDetalle.torneos.length})</h4>
+                  <ul style={{ margin: 0, paddingLeft: '20px' }}>{ligaDetalle.torneos.map(t => <li key={t.id}>{t.nombre}</li>)}</ul>
+                </div>
+              </div>
+
+              <h4 style={{ marginTop: '20px', color: '#2B6CB0', borderBottom: '1px solid #ddd', paddingBottom: '5px' }}>⚽ Partidos ({ligaDetalle.partidos.length})</h4>
+              <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                {ligaDetalle.partidos.map(p => <li key={p.id}>[{p.torneo_nombre}] {p.local_nombre} vs {p.visita_nombre} - <em>{p.estado}</em></li>)}
+              </ul>
             </div>
-          </form>
+          ) : (
+            <>
+              <h3>{ligaEditando ? '✏️ Editar Liga' : '🏆 Registrar Nueva Liga y su Administrador'}</h3>
+              <form onSubmit={ligaEditando ? actualizarLiga : guardarLiga} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px', padding: '15px', background: '#F7FAFC', border: '1px solid #CBD5E0', borderRadius: '6px' }}>
+                
+                {/* Datos de la Organización */}
+                <h4 style={{ gridColumn: 'span 2', margin: 0, color: '#2B6CB0' }}>Datos de la Organización</h4>
+                <input type="text" placeholder="Nombre Liga" value={ligaEditando ? ligaEditando.nombre : formLiga.nombre} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, nombre: e.target.value}) : setFormLiga({...formLiga, nombre: e.target.value})} required />
+                <input type="text" placeholder="Teléfono de la Liga" value={ligaEditando ? ligaEditando.responsable_telefono : formLiga.responsable_telefono} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_telefono: e.target.value}) : setFormLiga({...formLiga, responsable_telefono: e.target.value})} />
+                
+                {/* Datos del Responsable que se usará para crear la credencial (Ocultos si está editando, pues no recreamos el auth al editar) */}
+                <h4 style={{ gridColumn: 'span 2', margin: 0, color: '#2B6CB0', marginTop: '10px' }}>Datos del Administrador Responsable</h4>
+                <input type="text" placeholder="Nombres del Admin" value={ligaEditando ? ligaEditando.responsable_nombre : formLiga.responsable_nombre} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_nombre: e.target.value}) : setFormLiga({...formLiga, responsable_nombre: e.target.value})} required />
+                {!ligaEditando && <input type="text" placeholder="Apellidos del Admin" value={formLiga.responsable_apellido} onChange={(e) => setFormLiga({...formLiga, responsable_apellido: e.target.value})} required />}
+                {!ligaEditando && <input type="text" placeholder="Cédula (5 a 8 dígitos)" pattern="\d{5,8}" value={formLiga.responsable_cedula} onChange={(e) => setFormLiga({...formLiga, responsable_cedula: e.target.value})} required />}
+                <input type="email" placeholder="Correo Electrónico" value={ligaEditando ? ligaEditando.responsable_email : formLiga.responsable_email} onChange={(e) => ligaEditando ? setLigaEditando({...ligaEditando, responsable_email: e.target.value}) : setFormLiga({...formLiga, responsable_email: e.target.value})} required />
+                
+                {ligaEditando && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input type="checkbox" checked={ligaEditando.estado_activa} onChange={(e) => setLigaEditando({...ligaEditando, estado_activa: e.target.checked})} />
+                    Liga Activa
+                  </label>
+                )}
 
-          <h3>Ligas Registradas</h3>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
-            <thead>
-              <tr style={{ background: '#eee' }}>
-                <th style={{ border: '1px solid #ddd', padding: '8px' }}>Nombre</th>
-                <th style={{ border: '1px solid #ddd', padding: '8px' }}>Responsable</th>
-                <th style={{ border: '1px solid #ddd', padding: '8px' }}>Estado</th>
-                <th style={{ border: '1px solid #ddd', padding: '8px' }}>Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ligas.map((l) => (
-                <tr key={l.id}>
-                  <td style={{ border: '1px solid #ddd', padding: '8px' }}><strong>{l.nombre}</strong></td>
-                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{l.responsable_nombre} <br /><small>{l.responsable_email}</small></td>
-                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{l.estado_activa ? '🟢 Activa' : '🔴 Inactiva'}</td>
-                  <td style={{ border: '1px solid #ddd', padding: '8px', display: 'flex', gap: '5px' }}>
-                    <button onClick={() => setLigaEditando(l)}>Editar</button>
-                    <button 
-                      onClick={() => setItemEliminar({ tipo: 'liga', id: l.id, nombre: l.nombre })}
-                      style={{ background: '#E53E3E', color: '#fff', border: 'none', borderRadius: '3px', padding: '3px 8px', cursor: 'pointer' }}
-                    >
-                      Eliminar
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                <div style={{ gridColumn: 'span 2', display: 'flex', gap: '10px', marginTop: '10px' }}>
+                  <button type="submit" style={{ background: '#2B6CB0', color: 'white', border: 'none', padding: '10px 15px', borderRadius: '4px' }}>{ligaEditando ? 'Guardar Cambios' : 'Registrar Liga y Crear Credencial de Admin'}</button>
+                  {ligaEditando && <button type="button" onClick={() => setLigaEditando(null)}>Cancelar</button>}
+                </div>
+              </form>
+
+              <h3>Ligas Registradas</h3>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
+                <thead>
+                  <tr style={{ background: '#eee' }}>
+                    <th style={{ border: '1px solid #ddd', padding: '8px' }}>Nombre</th>
+                    <th style={{ border: '1px solid #ddd', padding: '8px' }}>Responsable</th>
+                    <th style={{ border: '1px solid #ddd', padding: '8px' }}>Estado</th>
+                    <th style={{ border: '1px solid #ddd', padding: '8px' }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ligas.map((l) => (
+                    <tr key={l.id}>
+                      <td style={{ border: '1px solid #ddd', padding: '8px' }}><strong>{l.nombre}</strong></td>
+                      <td style={{ border: '1px solid #ddd', padding: '8px' }}>{l.responsable_nombre} <br /><small>{l.responsable_email}</small></td>
+                      <td style={{ border: '1px solid #ddd', padding: '8px' }}>{l.estado_activa ? '🟢 Activa' : '🔴 Inactiva'}</td>
+                      <td style={{ border: '1px solid #ddd', padding: '8px', display: 'flex', gap: '5px' }}>
+                        <button onClick={() => verInformacionLiga(l.id)} style={{ background: '#38A169', color: '#fff', border: 'none', borderRadius: '3px', padding: '3px 8px', cursor: 'pointer' }}>Ver Info</button>
+                        <button onClick={() => setLigaEditando(l)}>Editar</button>
+                        <button 
+                          onClick={() => setItemEliminar({ tipo: 'liga', id: l.id, nombre: l.nombre })}
+                          style={{ background: '#E53E3E', color: '#fff', border: 'none', borderRadius: '3px', padding: '3px 8px', cursor: 'pointer' }}
+                        >
+                          Eliminar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
 
@@ -462,7 +531,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
               <input type="text" placeholder="Cédula (5 a 8 dígitos numéricos)" pattern="\d{5,8}" title="Debe ser exclusivamente numérica de 5 a 8 dígitos" value={userEditando.cedula || ''} onChange={(e) => setUserEditando({...userEditando, cedula: e.target.value})} required />
               <select value={userEditando.rol} onChange={(e) => setUserEditando({...userEditando, rol: e.target.value})}>
                 <option value="administrador de liga">Administrador de Liga</option>
-                <option value="arbitro/anotador">Árbitro / Anotador</option>
+                <option value="arbitro">Árbitro</option>
+                <option value="anotador">Anotador</option>
                 <option value="delegado de equipo">Delegado de Equipo</option>
                 <option value="Superadmin">Superadmin</option>
               </select>
@@ -484,7 +554,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
               
               <select value={formUser.rol} onChange={(e) => setFormUser({...formUser, rol: e.target.value})}>
                 <option value="administrador de liga">Administrador de Liga</option>
-                <option value="arbitro/anotador">Árbitro / Anotador</option>
+                <option value="arbitro">Árbitro</option>
+                <option value="anotador">Anotador</option>
                 <option value="delegado de equipo">Delegado de Equipo</option>
                 <option value="Superadmin">Superadmin</option>
               </select>
@@ -586,7 +657,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
             {formNotif.tipo_destino === 'por_rol' && (
               <select value={formNotif.rol_destino} onChange={(e) => setFormNotif({...formNotif, rol_destino: e.target.value})}>
                 <option value="administrador de liga">Administradores de Liga</option>
-                <option value="arbitro/anotador">Árbitros / Anotadores</option>
+                <option value="arbitro">Árbitro</option>
+                <option value="anotador">Anotador</option>
                 <option value="delegado de equipo">Delegados de Equipo</option>
               </select>
             )}
@@ -632,7 +704,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
                 <option value="">-- Todos los Roles --</option>
                 <option value="Superadmin">Superadmin</option>
                 <option value="administrador de liga">Administrador de Liga</option>
-                <option value="arbitro/anotador">Árbitro / Anotador</option>
+                <option value="arbitro">Árbitro</option>
+                <option value="anotador">Anotador</option>
                 <option value="delegado de equipo">Delegado de Equipo</option>
               </select>
             </div>

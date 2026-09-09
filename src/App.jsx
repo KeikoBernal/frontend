@@ -6,10 +6,18 @@ import SuperadminDashboard from './components/dashboards/SuperadminDashboard';
 import AdminLigaDashboard from './components/dashboards/AdminLigaDashboard';
 import ArbitroDashboard from './components/dashboards/ArbitroDashboard';
 import DelegadoDashboard from './components/dashboards/DelegadoDashboard';
+import AnotadorDashboard from './components/dashboards/AnotadorDashboard';
+import PantallaPuntajes from './components/dashboards/PantallaPuntajes'; // 👈 Importación de PantallaPuntajes
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
 function App() {
+  // 👇 Verificación temprana de la URL para mostrar la Pantalla de Puntajes en una pestaña limpia
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('vista') === 'puntajes') {
+    return <PantallaPuntajes />;
+  }
+
   const [vista, setVista] = useState('inicio'); // 'inicio', 'login', 'dashboard'
   const [paso, setPaso] = useState(1);         // 1: Credenciales, 2: OTP (Superadmin)
   const [partidos, setPartidos] = useState([]);
@@ -203,9 +211,13 @@ function App() {
         return <SuperadminDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       case 'administrador de liga':
         return <AdminLigaDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
+      case 'arbitro':
+      case 'árbitro':
       case 'arbitro/anotador':
       case 'árbitro / anotador':
         return <ArbitroDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
+      case 'anotador':
+        return <AnotadorDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       case 'delegado de equipo':
         return <DelegadoDashboard usuario={usuario} cerrarSesion={cerrarSesion} />;
       default:
