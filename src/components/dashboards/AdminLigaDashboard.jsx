@@ -84,23 +84,42 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
 
   const hoyStr = new Date().toISOString().split('T')[0];
   
-  // Obtener la fecha y hora exactamente en la zona horaria local del dispositivo
   const ahora = new Date();
   const anio = ahora.getFullYear();
   const mes = String(ahora.getMonth() + 1).padStart(2, '0');
   const dia = String(ahora.getDate()).padStart(2, '0');
   const hora = String(ahora.getHours()).padStart(2, '0');
   const minuto = String(ahora.getMinutes()).padStart(2, '0');
-  
-  // Generar la cadena en formato YYYY-MM-DDTHH:mm usando la hora local del sistema
   const ahoraIsoLocal = `${anio}-${mes}-${dia}T${hora}:${minuto}`;
   
+  // Función fetch mejorada con manejo seguro del token de Supabase
   const fetchConToken = async (endpoint, options = {}) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    return await fetch(`${API_URL}/admin-liga${endpoint}`, {
-      ...options,
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}`, ...options.headers },
-    });
+    try {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError || !session?.access_token) {
+        console.warn('Sesión no encontrada o expirada. Redirigiendo o requiriendo autenticación.');
+        return { ok: false, status: 401, json: async () => ({ error: 'Sesión no válida' }) };
+      }
+
+      const response = await fetch(`${API_URL}/admin-liga${endpoint}`, {
+        ...options,
+        headers: { 
+          'Content-Type': 'application/json', 
+          'Authorization': `Bearer ${session.access_token}`, 
+          ...options.headers 
+        },
+      });
+
+      if (response.status === 401) {
+        setMensaje('⚠️ Tu sesión ha expirado o no tienes autorización. Por favor, vuelve a iniciar sesión.');
+      }
+
+      return response;
+    } catch (err) {
+      console.error('Error de red en fetchConToken:', err);
+      return { ok: false, status: 500, json: async () => ({ error: 'Error de conexión con el servidor.' }) };
+    }
   };
 
   useEffect(() => {
@@ -139,10 +158,14 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
         const res = await fetchConToken('/partidos-finalizados');
         if (res.ok) setPartidos(await res.json());
       }
-    } catch (e) { setMensaje('Error cargando datos del servidor.'); }
+    } catch (e) { 
+      setMensaje('Error cargando datos del servidor.'); 
+    }
   };
 
-  useEffect(() => { cargarDatos(); }, [pestana]);
+  useEffect(() => { 
+    cargarDatos(); 
+  }, [pestana]);
 
   const consultarPosicionesAgrupadas = async (tId) => {
     if (!tId) return;
@@ -157,7 +180,7 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   };
 
   const consultarAcumuladoLiga = async () => {
-    const orgId = usuario.organizacion_id || (torneosList[0]?.organizacion_id);
+    const orgId = usuario?.organizacion_id || (torneosList[0]?.organizacion_id);
     if (!orgId) return;
     const res = await fetchConToken(`/acumulado-temporada?organizacion_id=${orgId}&temporada=${temporadaFiltro}`);
     if (res.ok) setAcumuladoLiga(await res.json());
@@ -560,7 +583,7 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
                     <td style={{ border: '1px solid #ddd', padding: '8px' }}><strong>{pr.nombre}</strong><br/><small>{pr.descripcion}</small></td>
                     <td style={{ border: '1px solid #ddd', padding: '8px' }}>{pr.reglas?.puntos_victoria ?? 3}p | {pr.reglas?.puntos_empate ?? 1}p | {pr.reglas?.puntos_derrota ?? 0}p</td>
                     <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                      Máx. Jugadores: {pr.reglas?.limite_jugadores} | Meta: {pr.reglas?.meta_puntos} pts | Templo: {pr.reglas?.tiempo_minutos} min | Suspensión: {pr.reglas?.tarjetas_suspension} tjs
+                      Máx. Jugadores: {pr.reglas?.limite_jugadores} | Meta: {pr.reglas?.meta_puntos} pts | Tiempo: {pr.reglas?.tiempo_minutos} min | Suspensión: {pr.reglas?.tarjetas_suspension} tjs
                     </td>
                   </tr>
                 ))

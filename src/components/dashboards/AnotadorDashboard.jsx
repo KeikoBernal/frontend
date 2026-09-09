@@ -12,11 +12,12 @@ export default function AnotadorDashboard({ usuario, cerrarSesion }) {
   const [debeCambiarPass, setDebeCambiarPass] = useState(false);
   const [nuevaClave, setNuevaClave] = useState('');
 
-  const [marcadorLocal, setMarcadorLocal] = useState(0);
-  const [marcadorVisita, setMarcadorVisita] = useState(0);
-  const [manoActual, setManoActual] = useState(1);
-  const [logIncidencias, setLogIncidencias] = useState([]);
+  // Estructura digital de la planilla para entrada de datos (20 manos)
+  const [manoSeleccionada, setManoSeleccionada] = useState(1); // Mano activa a registrar (1 al 20)
+  const [puntosLocalManos, setPuntosLocalManos] = useState(Array(20).fill(0));
+  const [puntosVisitaManos, setPuntosVisitaManos] = useState(Array(20).fill(0));
   
+  const [logIncidencias, setLogIncidencias] = useState([]);
   const [tiempoJuego, setTiempoJuego] = useState(0);
   const [cronometroActivo, setCronometroActivo] = useState(false);
   
@@ -96,25 +97,54 @@ export default function AnotadorDashboard({ usuario, cerrarSesion }) {
     setLogIncidencias(prev => [`[${new Date().toLocaleTimeString()}] ${mensaje}`, ...prev]);
   };
 
-  const registrarTantos = (equipoId, esLocal, puntos) => {
-    const nuevosPuntosLocal = esLocal ? marcadorLocal + puntos : marcadorLocal;
-    const nuevosPuntosVisita = !esLocal ? marcadorVisita + puntos : marcadorVisita;
-    
-    setMarcadorLocal(nuevosPuntosLocal);
-    setMarcadorVisita(nuevosPuntosVisita);
-    setManoActual(m => m + 1);
-    agregarLog(`Fin de Mano: ${puntos} tantos asignados al equipo ${esLocal ? 'Local' : 'Visitante'}.`);
+  // Registrar puntos en la planilla digital interactiva para una mano específica
+  const registrarPuntosMano = (esLocal, puntos) => {
+    const indexMano = manoSeleccionada - 1;
 
+    let nuevoLocalArray = [...puntosLocalManos];
+    let nuevoVisitaArray = [...puntosVisitaManos];
+
+    if (esLocal) {
+      nuevoLocalArray[indexMano] = puntos;
+      nuevoVisitaArray[indexMano] = 0; // En una mano solo anota un equipo
+    } else {
+      nuevoVisitaArray[indexMano] = puntos;
+      nuevoLocalArray[indexMano] = 0;
+    }
+
+    setPuntosLocalManos(nuevoLocalArray);
+    setPuntosVisitaManos(nuevoVisitaArray);
+
+    const totalLocal = nuevoLocalArray.reduce((a, b) => a + b, 0);
+    const totalVisita = nuevoVisitaArray.reduce((a, b) => a + b, 0);
+
+    agregarLog(`Mano #${manoActual}: ${puntos} tantos para el equipo ${esLocal ? 'Local' : 'Visitante'}.`);
+
+    // Emitir por WebSocket para actualizar la planilla pública y visualización en tiempo real
     socketRef.current.emit('tantos_asignados', {
-      partido_id: partidoActivo.id, mano_id: manoActual, equipo_ganador_id: equipoId,
-      tantos_anotados: puntos, nuevo_marcador_local: nuevosPuntosLocal, nuevo_marcador_visita: nuevosPuntosVisita
+      partido_id: partidoActivo.id,
+      mano_id: manoActual,
+      tantos_anotados: puntos,
+      tantosLocal: nuevoLocalArray,
+      tantosVisita: nuevoVisitaArray,
+      nuevo_marcador_local: totalLocal,
+      nuevo_marcador_visita: totalVisita
     });
+
+    // Avanzar automáticamente a la siguiente mano si es menor a 20
+    if (manoActual < 20) {
+      setManoActual(m => m + 1);
+      setManoSeleccionada(m => m + 1);
+    }
   };
+
+  const totalPuntosLocal = puntosLocalManos.reduce((a, b) => a + b, 0);
+  const totalPuntosVisita = puntosVisitaManos.reduce((a, b) => a + b, 0);
 
   const finalizarPartido = async () => {
     if (!window.confirm('¿Estás seguro de finalizar y cerrar el acta oficial?')) return;
     socketRef.current.emit('partido_finalizado', {
-      partido_id: partidoActivo.id, marcador_local: marcadorLocal, marcador_visita: marcadorVisita
+      partido_id: partidoActivo.id, marcador_local: totalPuntosLocal, marcador_visita: totalPuntosVisita
     });
     alert('Partido finalizado.');
     setPartidoActivo(null);
@@ -122,7 +152,7 @@ export default function AnotadorDashboard({ usuario, cerrarSesion }) {
   };
 
   return (
-    <div style={{ maxWidth: '900px', margin: '0 auto', padding: '15px', fontFamily: 'sans-serif' }}>
+    <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '15px', fontFamily: 'sans-serif' }}>
       {debeCambiarPass && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
           <div style={{ background: '#fff', padding: '30px', borderRadius: '8px', maxWidth: '400px', width: '90%' }}>
@@ -136,7 +166,7 @@ export default function AnotadorDashboard({ usuario, cerrarSesion }) {
       )}
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-        <h2>📝 Panel de Anotador Oficial</h2>
+        <h2>📝 Panel de Anotador Oficial (Planilla Digital Interactiva)</h2>
         <button onClick={cerrarSesion}>Cerrar Sesión</button>
       </div>
 
@@ -153,47 +183,114 @@ export default function AnotadorDashboard({ usuario, cerrarSesion }) {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '20px' }}>
           <div style={{ background: '#FFF', border: '1px solid #CBD5E0', padding: '20px', borderRadius: '6px' }}>
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-              <h1 style={{ fontSize: '3em', margin: '10px 0' }}>{formatoTiempo(tiempoJuego)}</h1>
-              <button onClick={() => setCronometroActivo(!cronometroActivo)} style={{ background: cronometroActivo ? '#E53E3E' : '#38A169', color: '#FFF', padding: '8px 15px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+            
+            {/* CRONÓMETRO Y ESTADO */}
+            <div style={{ textAlign: 'center', marginBottom: '15px', background: '#F7FAFC', padding: '10px', borderRadius: '6px' }}>
+              <h2 style={{ margin: '5px 0' }}>{formatoTiempo(tiempoJuego)}</h2>
+              <button onClick={() => setCronometroActivo(!cronometroActivo)} style={{ background: cronometroActivo ? '#E53E3E' : '#38A169', color: '#FFF', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
                 {cronometroActivo ? '⏸ Pausar Cronómetro' : '▶️ Iniciar Cronómetro'}
               </button>
             </div>
             
-            <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'center', background: '#2D3748', color: '#FFF', padding: '20px', borderRadius: '8px' }}>
+            {/* MARCADOR GENERAL ACUMULADO */}
+            <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'center', background: '#2D3748', color: '#FFF', padding: '15px', borderRadius: '8px', marginBottom: '20px' }}>
               <div style={{ textAlign: 'center' }}>
-                <h3>(L) {partidoActivo.local_nombre}</h3>
-                <span style={{ fontSize: '4em', fontWeight: 'bold' }}>{marcadorLocal}</span>
+                <h4 style={{ margin: 0 }}>{partidoActivo.local_nombre}</h4>
+                <span style={{ fontSize: '3em', fontWeight: 'bold' }}>{totalPuntosLocal}</span>
               </div>
-              <div style={{ fontSize: '2em', fontWeight: 'bold' }}>VS</div>
+              <div style={{ fontSize: '1.8em', fontWeight: 'bold' }}>VS</div>
               <div style={{ textAlign: 'center' }}>
-                <h3>(V) {partidoActivo.visita_nombre}</h3>
-                <span style={{ fontSize: '4em', fontWeight: 'bold' }}>{marcadorVisita}</span>
+                <h4 style={{ margin: 0 }}>{partidoActivo.visita_nombre}</h4>
+                <span style={{ fontSize: '3em', fontWeight: 'bold' }}>{totalPuntosVisita}</span>
               </div>
             </div>
 
-            <h4 style={{ marginTop: '20px' }}>Registrar Cierre de Mano (Tiro #{manoActual})</h4>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <select id="puntosSelect" style={{ padding: '10px', flex: 1 }}>
-                {[1,2,3,4,5,6,7,8].map(n => <option key={n} value={n}>{n} Tantos</option>)}
-              </select>
-              <button onClick={() => registrarTantos(partidoActivo.equipo_local_id, true, parseInt(document.getElementById('puntosSelect').value))} style={{ background: '#3182CE', color: '#FFF', border: 'none', cursor: 'pointer', padding: '8px' }}>Sumar Local</button>
-              <button onClick={() => registrarTantos(partidoActivo.equipo_visita_id, false, parseInt(document.getElementById('puntosSelect').value))} style={{ background: '#D69E2E', color: '#FFF', border: 'none', cursor: 'pointer', padding: '8px' }}>Sumar Visita</button>
+            {/* PLANILLA DIGITAL INTERACTIVA (MATRIZ DE ENTRADA 20 MANOS) */}
+            <div style={{ marginBottom: '20px', background: '#FDFCF0', border: '2px solid #000', padding: '10px', borderRadius: '4px', overflowX: 'auto' }}>
+              <h4 style={{ margin: '0 0 10px 0', textAlign: 'center', color: '#000' }}>📋 Planilla de Puntuación por Manos (1 al 20)</h4>
+              
+              <table style={{ width: '100%', borderCollapse: 'collapse', border: '1px solid #000', fontSize: '0.8em' }}>
+                <thead>
+                  <tr style={{ background: '#E2E8F0', color: '#000' }}>
+                    <th style={{ border: '1px solid #000', padding: '4px', width: '120px' }}>Equipo / Mano</th>
+                    {Array.from({ length: 20 }).map((_, i) => (
+                      <th key={i} style={{ border: '1px solid #000', padding: '2px', width: '25px', textAlign: 'center' }}>
+                        {i + 1}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Fila Puntos Local */}
+                  <tr>
+                    <td style={{ border: '1px solid #000', padding: '4px', fontWeight: 'bold', color: '#C53030' }}>
+                      {partidoActivo.local_nombre}
+                    </td>
+                    {puntosLocalManos.map((pts, i) => (
+                      <td key={i} onClick={() => { setManoSeleccionada(i + 1); setManoActual(i + 1); }} style={{ border: '1px solid #000', textAlign: 'center', background: manoSeleccionada === i + 1 ? '#FEFCBF' : '#FFF', color: '#C53030', fontWeight: 'bold', cursor: 'pointer' }}>
+                        {pts > 0 ? pts : ''}
+                      </td>
+                    ))}
+                  </tr>
+                  {/* Fila Puntos Visita */}
+                  <tr>
+                    <td style={{ border: '1px solid #000', padding: '4px', fontWeight: 'bold', color: '#DD6B20' }}>
+                      {partidoActivo.visita_nombre}
+                    </td>
+                    {puntosVisitaManos.map((pts, i) => (
+                      <td key={i} onClick={() => { setManoSeleccionada(i + 1); setManoActual(i + 1); }} style={{ border: '1px solid #000', textAlign: 'center', background: manoSeleccionada === i + 1 ? '#FEFCBF' : '#FFF', color: '#DD6B20', fontWeight: 'bold', cursor: 'pointer' }}>
+                        {pts > 0 ? pts : ''}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
-            <button onClick={finalizarPartido} style={{ width: '100%', padding: '15px', background: '#E53E3E', color: '#FFF', marginTop: '20px', border: 'none', cursor: 'pointer', borderRadius: '4px' }}>🏁 Finalizar Partido y Cerrar Acta</button>
+            {/* CONTROLES DE ASIGNACIÓN PARA LA MANO SELECCIONADA */}
+            <div style={{ background: '#EDF2F7', padding: '15px', borderRadius: '6px', marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 10px 0' }}>✍️ Registrar Tantos en <strong>Mano #{manoSeleccionada}</strong></h4>
+              
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
+                <div>
+                  <label style={{ fontSize: '0.85em', fontWeight: 'bold' }}>Puntos para Local:</label>
+                  <div style={{ display: 'flex', gap: '5px', marginTop: '5px', flexWrap: 'wrap' }}>
+                    {[1, 2, 3, 4, 5, 6].map(pts => (
+                      <button key={pts} onClick={() => registrarPuntosMano(true, pts)} style={{ background: '#3182CE', color: '#FFF', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        +{pts}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.85em', fontWeight: 'bold' }}>Puntos para Visitante:</label>
+                  <div style={{ display: 'flex', gap: '5px', marginTop: '5px', flexWrap: 'wrap' }}>
+                    {[1, 2, 3, 4, 5, 6].map(pts => (
+                      <button key={pts} onClick={() => registrarPuntosMano(false, pts)} style={{ background: '#D69E2E', color: '#FFF', border: 'none', padding: '8px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                        +{pts}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button onClick={finalizarPartido} style={{ width: '100%', padding: '12px', background: '#E53E3E', color: '#FFF', border: 'none', cursor: 'pointer', borderRadius: '4px', fontWeight: 'bold' }}>
+              🏁 Finalizar Partido y Cerrar Acta Oficial
+            </button>
 
             {/* BOTÓN PARA ABRIR PANTALLA DE PUNTAJES EN VIVO */}
             <button 
               onClick={() => window.open(`/?vista=puntajes&partido_id=${partidoActivo.id}`, '_blank')} 
               style={{ width: '100%', padding: '12px', background: '#3182CE', color: '#FFF', border: 'none', borderRadius: '4px', cursor: 'pointer', marginTop: '10px', fontWeight: 'bold' }}
             >
-              📺 Proyectar Pantalla de Puntajes (Nueva Pest.)
+              📺 Proyectar Pantalla de Resultados en Vivo (Nueva Pest.)
             </button>
           </div>
 
-          <div style={{ background: '#F7FAFC', border: '1px solid #E2E8F0', padding: '15px', borderRadius: '6px', maxHeight: '600px', overflowY: 'auto' }}>
-            <h4>📡 Bitácora en Vivo (Árbitro)</h4>
+          <div style={{ background: '#F7FAFC', border: '1px solid #E2E8F0', padding: '15px', borderRadius: '6px', maxHeight: '650px', overflowY: 'auto' }}>
+            <h4>📡 Bitácora en Vivo (Árbitro & Anotador)</h4>
             <div style={{ fontSize: '0.85em', color: '#4A5568', display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {logIncidencias.length === 0 ? <p style={{ fontStyle: 'italic' }}>Esperando jugadas...</p> : logIncidencias.map((log, idx) => <div key={idx} style={{ background: '#FFF', padding: '8px', borderLeft: '3px solid #3182CE', borderRadius: '3px' }}>{log}</div>)}
             </div>
