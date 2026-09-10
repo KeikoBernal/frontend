@@ -1061,9 +1061,22 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
                         </div>
 
                         <div style={{ marginTop: '8px' }}>
-                          <input type="datetime-local" min={ahoraIsoLocal} value={p.fecha_hora} onChange={e => {
-                            const arr = [...partidosIniciales]; arr[index].fecha_hora = e.target.value; setPartidosIniciales(arr);
-                          }} required style={{ width: '100%' }} />
+                          <input 
+                            type="datetime-local" 
+                            min={`${formTorneo.fecha_inicio}T00:00`} 
+                            max={`${formTorneo.fecha_fin}T23:59`}
+                            value={p.fecha_hora} 
+                            onChange={e => {
+                              const arr = [...partidosIniciales]; 
+                              arr[index].fecha_hora = e.target.value; 
+                              setPartidosIniciales(arr);
+                            }} 
+                            required 
+                            style={{ width: '100%' }} 
+                          />
+                          <small style={{ color: '#718096', fontSize: '0.75em' }}>
+                            📅 Válido desde el {formTorneo.fecha_inicio} hasta el {formTorneo.fecha_fin}
+                          </small>
                         </div>
                       </div>
                     );
