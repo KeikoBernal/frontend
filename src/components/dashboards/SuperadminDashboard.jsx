@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../supabaseClient';
+import SistemaMensajeria from './SistemaMensajeria';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
@@ -89,6 +90,14 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
       setMensaje('Error conectando con el servidor.');
     }
   };
+
+  const [token, setToken] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setToken(session?.access_token);
+    });
+  }, []);
 
   useEffect(() => {
     cargarDatosPestana();
@@ -249,7 +258,8 @@ export default function SuperadminDashboard({ usuario, cerrarSesion }) {
   };
 
   return (
-    <div style={{ fontFamily: 'sans-serif', maxWidth: '1000px', margin: '0 auto', padding: '10px' }}>
+  <div style={{ fontFamily: 'sans-serif', maxWidth: '1000px', margin: '0 auto', padding: '10px' }}>
+    <SistemaMensajeria usuario={usuario} token={token} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
         <h2>🛡️ Control General - Superadmin</h2>
         <button onClick={ejecutarCerrarSesion}>Cerrar Sesión</button>

@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../supabaseClient';
+import { io } from 'socket.io-client';
+import SistemaMensajeria from './SistemaMensajeria';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
 
 export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   const [pestana, setPestana] = useState('equipos');
@@ -21,6 +24,14 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   const [partidos, setPartidos] = useState([]);
   const [torneosList, setTorneosList] = useState([]);
 
+  // Estados de Mensajería (Socket.io)
+  const [mensajeriaAbierta, setMensajeriaAbierta] = useState(false);
+  const [mensajes, setMensajes] = useState([]);
+  const [nuevoMensaje, setNuevoMensaje] = useState('');
+  const [destinatariosSeleccionados, setDestinatariosSeleccionados] = useState([]);
+  const [notificaciones, setNotificaciones] = useState(0);
+  const socketRef = useRef(null);
+
   // Estados para consulta de posiciones agrupadas y acumulados
   const [posicionesGrupoA, setPosicionesGrupoA] = useState([]);
   const [posicionesGrupoB, setPosicionesGrupoB] = useState([]);
@@ -33,6 +44,10 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   const [jugadorEditandoId, setJugadorEditandoId] = useState(null);
   const [sedeEditando, setSedeEditando] = useState(null);
   const [torneoEditando, setTorneoEditando] = useState(null);
+  const [modalForzar, setModalForzar] = useState({ visible: false, partido: null, ganadorId: '', motivo: '', password: '' });
+  
+  // NUEVO: Estado para el Modal de Reagendar
+  const [modalReagendar, setModalReagendar] = useState({ visible: false, partido: null, nuevaFecha: '' });
 
   // Formularios
   const [formSede, setFormSede] = useState({ nombre: '', direccion: '' });
@@ -40,143 +55,76 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   const [formJugador, setFormJugador] = useState({ cedula: '', nombre: '', apellido: '', fecha_nacimiento: '', correo: '', telefono: '', numero_dorsal: '', foto_url: '', es_capitan: false });
   const [formCredencial, setFormCredencial] = useState({ nombre: '', apellido: '', cedula: '', email: '', rol: 'arbitro', equipo_id: '' });
   
-  // Estado para partido suelto (Sin requerir torneo_id manual)
-  const [formPartidoSuelto, setFormPartidoSuelto] = useState({
-    equipo_local_id: '',
-    equipo_visita_id: '',
-    sede_id: '',
-    arbitro_id: '',
-    anotador_id: '',
-    fecha_hora: ''
-  });
-  
-  // Formulario unificado de Reglas (Puntuación + Disciplina/Tiempos)
-  const [formReglas, setFormReglas] = useState({ 
-    nombre: '', 
-    descripcion: '', 
-    puntos_victoria: 3, 
-    puntos_empate: 1, 
-    puntos_derrota: 0,
-    limite_jugadores: 8,
-    meta_puntos: 15,
-    tiempo_minutos: 60,
-    tarjetas_suspension: 2,
-    politica_clasificacion: 'ganador_vs_ganador'
-  });
-  
-  // Sub-sección Torneos
+  const [formPartidoSuelto, setFormPartidoSuelto] = useState({ equipo_local_id: '', equipo_visita_id: '', sede_id: '', arbitro_id: '', anotador_id: '', fecha_hora: '' });
+  const [formReglas, setFormReglas] = useState({ nombre: '', descripcion: '', puntos_victoria: 3, puntos_empate: 1, puntos_derrota: 0, limite_jugadores: 8, meta_puntos: 15, tiempo_minutos: 60, tarjetas_suspension: 2, politica_clasificacion: 'ganador_vs_ganador' });
   const [subPestanaTorneo, setSubPestanaTorneo] = useState('lista');
   const [pasoTorneo, setPasoTorneo] = useState(1);
-  const [formTorneo, setFormTorneo] = useState({ 
-    nombre: '', 
-    fecha_inicio: '', 
-    fecha_fin: '', 
-    plantilla_id: '', 
-    categoria: 'Adulto 22+', 
-    tipo_genero: 'Mixto',
-    sistema_clasificacion: 'liga_semifinales', 
-    opcion_grupos: 'cruc_semis', 
-    incluir_tercer_lugar: true,
-    temporada: '2026'
-  });
+  const [formTorneo, setFormTorneo] = useState({ nombre: '', fecha_inicio: '', fecha_fin: '', plantilla_id: '', categoria: 'Adulto 22+', tipo_genero: 'Mixto', sistema_clasificacion: 'liga_semifinales', opcion_grupos: 'cruc_semis', incluir_tercer_lugar: true, temporada: '2026' });
   const [equiposSeleccionadosTorneo, setEquiposSeleccionadosTorneo] = useState([]);
   const [partidosIniciales, setPartidosIniciales] = useState([]);
 
   const hoyStr = new Date().toISOString().split('T')[0];
-  
   const ahora = new Date();
-  const anio = ahora.getFullYear();
-  const mes = String(ahora.getMonth() + 1).padStart(2, '0');
-  const dia = String(ahora.getDate()).padStart(2, '0');
-  const hora = String(ahora.getHours()).padStart(2, '0');
-  const minuto = String(ahora.getMinutes()).padStart(2, '0');
-  const ahoraIsoLocal = `${anio}-${mes}-${dia}T${hora}:${minuto}`;
+  const ahoraIsoLocal = `${ahora.getFullYear()}-${String(ahora.getMonth() + 1).padStart(2, '0')}-${String(ahora.getDate()).padStart(2, '0')}T${String(ahora.getHours()).padStart(2, '0')}:${String(ahora.getMinutes()).padStart(2, '0')}`;
   
-  // Función fetch mejorada con manejo seguro del token de Supabase
   const fetchConToken = async (endpoint, options = {}) => {
     try {
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
-      if (sessionError || !session?.access_token) {
-        console.warn('Sesión no encontrada o expirada. Redirigiendo o requiriendo autenticación.');
-        return { ok: false, status: 401, json: async () => ({ error: 'Sesión no válida' }) };
-      }
-
-      const response = await fetch(`${API_URL}/admin-liga${endpoint}`, {
-        ...options,
-        headers: { 
-          'Content-Type': 'application/json', 
-          'Authorization': `Bearer ${session.access_token}`, 
-          ...options.headers 
-        },
-      });
-
-      if (response.status === 401) {
-        setMensaje('⚠️ Tu sesión ha expirado o no tienes autorización. Por favor, vuelve a iniciar sesión.');
-      }
-
+      if (sessionError || !session?.access_token) return { ok: false, status: 401, json: async () => ({ error: 'Sesión no válida' }) };
+      const response = await fetch(`${API_URL}/admin-liga${endpoint}`, { ...options, headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}`, ...options.headers } });
+      if (response.status === 401) setMensaje('⚠️ Tu sesión ha expirado.');
       return response;
-    } catch (err) {
-      console.error('Error de red en fetchConToken:', err);
-      return { ok: false, status: 500, json: async () => ({ error: 'Error de conexión con el servidor.' }) };
-    }
+    } catch (err) { return { ok: false, status: 500, json: async () => ({ error: 'Error de conexión.' }) }; }
   };
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user?.user_metadata?.debe_cambiar_password) setDebeCambiarPass(true);
-    });
-  }, []);
 
   const cargarDatos = async () => {
     setMensaje('');
     try {
       if (pestana === 'equipos' || pestana === 'credenciales') {
-        const res = await fetchConToken('/equipos');
-        if (res.ok) setEquipos(await res.json());
-        const resOp = await fetchConToken('/usuarios-operativos');
-        if (resOp.ok) setUsuariosOperativos(await resOp.json());
+        const res = await fetchConToken('/equipos'); if (res.ok) setEquipos(await res.json());
+        const resOp = await fetchConToken('/usuarios-operativos'); if (resOp.ok) setUsuariosOperativos(await resOp.json());
       } else if (pestana === 'sedes') {
-        const res = await fetchConToken('/sedes');
-        if (res.ok) setSedes(await res.json());
+        const res = await fetchConToken('/sedes'); if (res.ok) setSedes(await res.json());
       } else if (pestana === 'reglas') {
-        const res = await fetchConToken('/plantillas-reglas');
-        if (res.ok) setPlantillasReglas(await res.json());
+        const res = await fetchConToken('/plantillas-reglas'); if (res.ok) setPlantillasReglas(await res.json());
       } else if (pestana === 'torneos') {
-        const resEq = await fetchConToken('/equipos');
-        if (resEq.ok) setEquipos(await resEq.json());
-        const resReg = await fetchConToken('/plantillas-reglas');
-        if (resReg.ok) setPlantillasReglas(await resReg.json());
-        const resRec = await fetchConToken('/torneos/recursos');
-        if (resRec.ok) setRecursosTorneo(await resRec.json());
-        const resTor = await fetchConToken('/torneos');
-        if (resTor.ok) setTorneosList(await resTor.json());
+        const resEq = await fetchConToken('/equipos'); if (resEq.ok) setEquipos(await resEq.json());
+        const resReg = await fetchConToken('/plantillas-reglas'); if (resReg.ok) setPlantillasReglas(await resReg.json());
+        const resRec = await fetchConToken('/torneos/recursos'); if (resRec.ok) setRecursosTorneo(await resRec.json());
+        const resTor = await fetchConToken('/torneos'); if (resTor.ok) setTorneosList(await resTor.json());
       } else if (pestana === 'estadisticas') {
-        const res = await fetchConToken('/estadisticas');
-        if (res.ok) setEstadisticas(await res.json());
+        const res = await fetchConToken('/estadisticas'); if (res.ok) setEstadisticas(await res.json());
       } else if (pestana === 'historial') {
-        const res = await fetchConToken('/partidos-finalizados');
-        if (res.ok) setPartidos(await res.json());
+        const res = await fetchConToken('/partidos-finalizados'); if (res.ok) setPartidos(await res.json());
       }
-    } catch (e) { 
-      setMensaje('Error cargando datos del servidor.'); 
-    }
+    } catch (e) { setMensaje('Error cargando datos del servidor.'); }
   };
 
-  useEffect(() => { 
-    cargarDatos(); 
-  }, [pestana]);
+  useEffect(() => {
+    socketRef.current = io(SOCKET_URL);
+    
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user?.user_metadata?.debe_cambiar_password) setDebeCambiarPass(true);
+    });
+
+    return () => socketRef.current?.disconnect();
+  }, [usuario]);
+
+  const [token, setToken] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setToken(session?.access_token);
+    });
+  }, []);
+
+  useEffect(() => { cargarDatos(); }, [pestana]);
 
   const consultarPosicionesAgrupadas = async (tId) => {
     if (!tId) return;
-    const resA = await fetchConToken(`/torneos/${tId}/posiciones?grupo=A`);
-    if (resA.ok) setPosicionesGrupoA(await resA.json());
-
-    const resB = await fetchConToken(`/torneos/${tId}/posiciones?grupo=B`);
-    if (resB.ok) setPosicionesGrupoB(await resB.json());
-
-    const resGen = await fetchConToken(`/torneos/${tId}/posiciones`);
-    if (resGen.ok) setPosicionesGeneral(await resGen.json());
+    const resA = await fetchConToken(`/torneos/${tId}/posiciones?grupo=A`); if (resA.ok) setPosicionesGrupoA(await resA.json());
+    const resB = await fetchConToken(`/torneos/${tId}/posiciones?grupo=B`); if (resB.ok) setPosicionesGrupoB(await resB.json());
+    const resGen = await fetchConToken(`/torneos/${tId}/posiciones`); if (resGen.ok) setPosicionesGeneral(await resGen.json());
   };
 
   const consultarAcumuladoLiga = async () => {
@@ -187,8 +135,7 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   };
 
   const seleccionarEquipoModal = async (equipo) => {
-    setEquipoSeleccionado(equipo);
-    setJugadorEditandoId(null);
+    setEquipoSeleccionado(equipo); setJugadorEditandoId(null);
     setFormJugador({ cedula: '', nombre: '', apellido: '', fecha_nacimiento: '', correo: '', telefono: '', numero_dorsal: '', foto_url: '', es_capitan: false });
     const res = await fetchConToken(`/equipos/${equipo.id}/jugadores`);
     if (res.ok) setJugadores(await res.json());
@@ -196,21 +143,13 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
 
   const guardarSede = async (e) => {
     e.preventDefault();
-    const endpoint = sedeEditando ? `/sedes/${sedeEditando.id}` : '/sedes';
-    const metodo = sedeEditando ? 'PUT' : 'POST';
-    const res = await fetchConToken(endpoint, { method: metodo, body: JSON.stringify(formSede) });
-    if (res.ok) { 
-      setMensaje(sedeEditando ? 'Sede actualizada.' : 'Sede registrada.'); 
-      setFormSede({ nombre: '', direccion: '' }); 
-      setSedeEditando(null);
-      cargarDatos(); 
-    }
+    const res = await fetchConToken(sedeEditando ? `/sedes/${sedeEditando.id}` : '/sedes', { method: sedeEditando ? 'PUT' : 'POST', body: JSON.stringify(formSede) });
+    if (res.ok) { setMensaje(sedeEditando ? 'Sede actualizada.' : 'Sede registrada.'); setFormSede({ nombre: '', direccion: '' }); setSedeEditando(null); cargarDatos(); }
   };
 
   const eliminarSede = async (id) => {
     if (!window.confirm('¿Eliminar esta sede?')) return;
-    const res = await fetchConToken(`/sedes/${id}`, { method: 'DELETE' });
-    if (res.ok) cargarDatos();
+    const res = await fetchConToken(`/sedes/${id}`, { method: 'DELETE' }); if (res.ok) cargarDatos();
   };
 
   const guardarEquipo = async (e) => {
@@ -221,82 +160,47 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
 
   const guardarJugador = async (e) => {
     e.preventDefault();
-    const endpoint = jugadorEditandoId ? `/jugadores/${jugadorEditandoId}` : `/jugadores`;
-    const metodo = jugadorEditandoId ? 'PUT' : 'POST';
-    const res = await fetchConToken(endpoint, { method: metodo, body: JSON.stringify({ ...formJugador, equipo_id: equipoSeleccionado.id }) });
+    const res = await fetchConToken(jugadorEditandoId ? `/jugadores/${jugadorEditandoId}` : `/jugadores`, { method: jugadorEditandoId ? 'PUT' : 'POST', body: JSON.stringify({ ...formJugador, equipo_id: equipoSeleccionado.id }) });
     const data = await res.json();
-    if (res.ok) {
-      setMensaje(jugadorEditandoId ? 'Jugador actualizado.' : 'Jugador agregado.');
-      setFormJugador({ cedula: '', nombre: '', apellido: '', fecha_nacimiento: '', correo: '', telefono: '', numero_dorsal: '', foto_url: '', es_capitan: false });
-      setJugadorEditandoId(null);
-      seleccionarEquipoModal(equipoSeleccionado);
-    } else { alert(data.error); }
+    if (res.ok) { setMensaje('Éxito'); setFormJugador({ cedula: '', nombre: '', apellido: '', fecha_nacimiento: '', correo: '', telefono: '', numero_dorsal: '', foto_url: '', es_capitan: false }); setJugadorEditandoId(null); seleccionarEquipoModal(equipoSeleccionado); } 
+    else { alert(data.error); }
   };
 
   const guardarPlantillaReglas = async (e) => {
     e.preventDefault();
     const res = await fetchConToken('/plantillas-reglas', {
-      method: 'POST',
-      body: JSON.stringify({
-        nombre: formReglas.nombre,
-        descripcion: formReglas.descripcion,
-        reglas: {
-          puntos_victoria: parseInt(formReglas.puntos_victoria),
-          puntos_empate: parseInt(formReglas.puntos_empate),
-          puntos_derrota: parseInt(formReglas.puntos_derrota),
-          limite_jugadores: parseInt(formReglas.limite_jugadores),
-          meta_puntos: parseInt(formReglas.meta_puntos),
-          tiempo_minutos: parseInt(formReglas.tiempo_minutos),
-          tarjetas_suspension: parseInt(formReglas.tarjetas_suspension),
-          politica_clasificacion: formReglas.politica_clasificacion
-        }
-      })
+      method: 'POST', body: JSON.stringify({ nombre: formReglas.nombre, descripcion: formReglas.descripcion, reglas: { puntos_victoria: parseInt(formReglas.puntos_victoria), puntos_empate: parseInt(formReglas.puntos_empate), puntos_derrota: parseInt(formReglas.puntos_derrota), limite_jugadores: parseInt(formReglas.limite_jugadores), meta_puntos: parseInt(formReglas.meta_puntos), tiempo_minutos: parseInt(formReglas.tiempo_minutos), tarjetas_suspension: parseInt(formReglas.tarjetas_suspension), politica_clasificacion: formReglas.politica_clasificacion }})
     });
     const data = await res.json();
-    if (res.ok) {
-      setMensaje('Plantilla unificada de reglas guardada con éxito.');
-      setFormReglas({ nombre: '', descripcion: '', puntos_victoria: 3, puntos_empate: 1, puntos_derrota: 0, limite_jugadores: 8, meta_puntos: 15, tiempo_minutos: 60, tarjetas_suspension: 2, politica_clasificacion: 'ganador_vs_ganador' });
-      cargarDatos();
-    } else {
-      alert(data.error || 'Error al guardar plantilla.');
+    if (res.ok) { setMensaje('Plantilla guardada.'); cargarDatos(); } else { alert(data.error); }
+  };
+
+  const validarDisponibilidadEquipos = (equipo1, equipo2, fechaHora) => {
+    const conflicto = partidos.find(p => 
+      p.fecha_hora === fechaHora && 
+      (p.equipo_local_id == equipo1 || p.equipo_visita_id == equipo1 || 
+      p.equipo_local_id == equipo2 || p.equipo_visita_id == equipo2)
+    );
+    if (conflicto) {
+      alert(`⚠️ Conflicto: Al menos uno de los equipos ya tiene el encuentro "${conflicto.local_nombre} vs ${conflicto.visita_nombre}" agendado a esta misma hora.`);
+      return false;
     }
+    return true;
   };
 
   const guardarPartidoSuelto = async (e) => {
     e.preventDefault();
-    if (formPartidoSuelto.equipo_local_id === formPartidoSuelto.equipo_visita_id) {
-      alert('El equipo local y el visitante no pueden ser el mismo.');
-      return;
-    }
-
-    const res = await fetchConToken('/partidos-sueltos', {
-      method: 'POST',
-      body: JSON.stringify(formPartidoSuelto)
-    });
+    if (formPartidoSuelto.equipo_local_id === formPartidoSuelto.equipo_visita_id) return alert('El equipo local y visitante no pueden ser el mismo.');
+    if (!validarDisponibilidadEquipos(formPartidoSuelto.equipo_local_id, formPartidoSuelto.equipo_visita_id, formPartidoSuelto.fecha_hora)) return;
+    const res = await fetchConToken('/partidos-sueltos', { method: 'POST', body: JSON.stringify(formPartidoSuelto) });
     const data = await res.json();
-
-    if (res.ok) {
-      setMensaje('¡Partido suelto agendado con éxito! Ya puede ser visualizado por el árbitro y anotador.');
-      setFormPartidoSuelto({ equipo_local_id: '', equipo_visita_id: '', sede_id: '', arbitro_id: '', anotador_id: '', fecha_hora: '' });
-      cargarDatos();
-    } else {
-      alert(data.error || 'Error al agendar el partido.');
-    }
+    if (res.ok) { setMensaje('Partido agendado con éxito.'); setFormPartidoSuelto({ equipo_local_id: '', equipo_visita_id: '', sede_id: '', arbitro_id: '', anotador_id: '', fecha_hora: '' }); cargarDatos(); } 
+    else { alert(data.error); }
   };
 
   const iniciarEdicionJugador = (j) => {
     setJugadorEditandoId(j.id);
-    setFormJugador({
-      cedula: j.cedula || '',
-      nombre: j.nombre || '',
-      apellido: j.apellido || '',
-      fecha_nacimiento: j.fecha_nacimiento ? j.fecha_nacimiento.split('T')[0] : '',
-      correo: j.correo || '',
-      telefono: j.telefono || '',
-      numero_dorsal: j.numero_dorsal || '',
-      foto_url: j.foto_url || '',
-      es_capitan: equipoSeleccionado?.capitan_id === j.id
-    });
+    setFormJugador({ cedula: j.cedula || '', nombre: j.nombre || '', apellido: j.apellido || '', fecha_nacimiento: j.fecha_nacimiento ? j.fecha_nacimiento.split('T')[0] : '', correo: j.correo || '', telefono: j.telefono || '', numero_dorsal: j.numero_dorsal || '', foto_url: j.foto_url || '', es_capitan: equipoSeleccionado?.capitan_id === j.id });
   };
 
   const cambiarEstadoJugador = async (id, estadoActual) => {
@@ -307,14 +211,8 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
   };
 
   const generarEstructuraPartidosPersonalizada = () => {
-    if (equiposSeleccionadosTorneo.length < 2) {
-      alert('Debes seleccionar al menos 2 equipos.');
-      return;
-    }
-
-    let lista = [...equiposSeleccionadosTorneo];
-    lista.sort(() => Math.random() - 0.5);
-
+    if (equiposSeleccionadosTorneo.length < 2) return alert('Debes seleccionar al menos 2 equipos.');
+    let lista = [...equiposSeleccionadosTorneo]; lista.sort(() => Math.random() - 0.5);
     const nuevosPartidos = [];
     const defaultSede = recursosTorneo.sedes[0]?.id || '';
     const defaultArbitro = recursosTorneo.arbitros.length === 1 ? recursosTorneo.arbitros[0].id : '';
@@ -322,122 +220,54 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
     const sistema = formTorneo.sistema_clasificacion;
 
     if (sistema === 'liga_semifinales') {
-      for (let i = 0; i < lista.length; i++) {
-        for (let j = i + 1; j < lista.length; j++) {
-          nuevosPartidos.push({
-            local_id: lista[i], visita_id: lista[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase Regular (Liga)'
-          });
-        }
-      }
+      for (let i = 0; i < lista.length; i++) for (let j = i + 1; j < lista.length; j++) nuevosPartidos.push({ local_id: lista[i], visita_id: lista[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase Regular (Liga)' });
       nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Semifinal 1 (1° Lugar Tabla vs 4° Lugar Tabla)' });
       nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Semifinal 2 (2° Lugar Tabla vs 3° Lugar Tabla)' });
-      
-      if (formTorneo.incluir_tercer_lugar) {
-        nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Partido por el 3er Lugar (Perdedor Semifinal 1 vs Perdedor Semifinal 2)' });
-      }
-      nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final (Ganador Semifinal 1 vs Ganador Semifinal 2)' });
-
+      if (formTorneo.incluir_tercer_lugar) nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Partido por el 3er Lugar' });
+      nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final' });
     } else if (sistema === 'dos_grupos') {
       const mitad = Math.ceil(lista.length / 2);
-      const grupoA = lista.slice(0, mitad);
-      const grupoB = lista.slice(mitad);
-
-      for (let i = 0; i < grupoA.length; i++) {
-        for (let j = i + 1; j < grupoA.length; j++) {
-          nuevosPartidos.push({ local_id: grupoA[i], visita_id: grupoA[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase de Grupos (Grupo A)' });
-        }
-      }
-      for (let i = 0; i < grupoB.length; i++) {
-        for (let j = i + 1; j < grupoB.length; j++) {
-          nuevosPartidos.push({ local_id: grupoB[i], visita_id: grupoB[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase de Grupos (Grupo B)' });
-        }
-      }
-
-      if (formTorneo.opcion_grupos === 'final_directa') {
-        nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final (1° del Grupo A vs 1° del Grupo B)' });
-      } else {
+      const grupoA = lista.slice(0, mitad); const grupoB = lista.slice(mitad);
+      for (let i = 0; i < grupoA.length; i++) for (let j = i + 1; j < grupoA.length; j++) nuevosPartidos.push({ local_id: grupoA[i], visita_id: grupoA[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase de Grupos (Grupo A)' });
+      for (let i = 0; i < grupoB.length; i++) for (let j = i + 1; j < grupoB.length; j++) nuevosPartidos.push({ local_id: grupoB[i], visita_id: grupoB[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase de Grupos (Grupo B)' });
+      if (formTorneo.opcion_grupos === 'final_directa') { nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final' }); } 
+      else {
         nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Semifinal Cruzada 1 (1° Grupo A vs 2° Grupo B)' });
         nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Semifinal Cruzada 2 (1° Grupo B vs 2° Grupo A)' });
-        if (formTorneo.incluir_tercer_lugar) {
-          nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Partido por el 3er Lugar (Perdedores Semifinales)' });
-        }
-        nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final (Ganadores Semifinales)' });
+        if (formTorneo.incluir_tercer_lugar) nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Partido por el 3er Lugar' });
+        nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final' });
       }
-
     } else if (sistema === 'liga_final_directa') {
-      for (let i = 0; i < lista.length; i++) {
-        for (let j = i + 1; j < lista.length; j++) {
-          nuevosPartidos.push({ local_id: lista[i], visita_id: lista[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase Regular (Liga)' });
-        }
-      }
+      for (let i = 0; i < lista.length; i++) for (let j = i + 1; j < lista.length; j++) nuevosPartidos.push({ local_id: lista[i], visita_id: lista[j], sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Fase Regular (Liga)' });
       nuevosPartidos.push({ local_id: '', visita_id: '', sede_id: defaultSede, arbitro_id: defaultArbitro, anotador_id: defaultAnotador, fecha_hora: '', fase: 'Gran Final (1° Lugar Tabla General vs 2° Lugar Tabla General)' });
     }
-
-    setPartidosIniciales(nuevosPartidos);
-    setPasoTorneo(3);
+    setPartidosIniciales(nuevosPartidos); setPasoTorneo(3);
   };
 
   const guardarTorneoCompleto = async (e) => {
     e.preventDefault();
-    if (!formTorneo.nombre || !formTorneo.fecha_inicio || !formTorneo.fecha_fin || !formTorneo.plantilla_id) {
-      alert('Completa todos los datos generales.');
-      return;
-    }
-    if (formTorneo.fecha_inicio < hoyStr) {
-      alert('La fecha de inicio no puede ser pasada.');
-      return;
-    }
-
-    const res = await fetchConToken('/torneos', { 
-      method: 'POST', 
-      body: JSON.stringify({ 
-        ...formTorneo, 
-        categorias_permitidas: [`${formTorneo.categoria} - ${formTorneo.tipo_genero}`],
-        partidos_iniciales: partidosIniciales 
-      }) 
-    });
+    const res = await fetchConToken('/torneos', { method: 'POST', body: JSON.stringify({ ...formTorneo, categorias_permitidas: [`${formTorneo.categoria} - ${formTorneo.tipo_genero}`], partidos_iniciales: partidosIniciales }) });
     const data = await res.json();
-    if (res.ok) { 
-      setMensaje('Torneo creado con éxito.'); 
-      setPartidosIniciales([]); 
-      setPasoTorneo(1);
-      setSubPestanaTorneo('lista');
-      setFormTorneo({ nombre: '', fecha_inicio: '', fecha_fin: '', plantilla_id: '', categoria: 'Adulto 22+', tipo_genero: 'Mixto', sistema_clasificacion: 'liga_semifinales', opcion_grupos: 'cruc_semis', incluir_tercer_lugar: true, temporada: '2026' });
-      cargarDatos(); 
-    } else { alert(data.error); }
+    if (res.ok) { setMensaje('Torneo creado.'); setPartidosIniciales([]); setPasoTorneo(1); setSubPestanaTorneo('lista'); cargarDatos(); } else { alert(data.error); }
   };
 
   const actualizarTorneoEdicion = async (e) => {
     e.preventDefault();
-    const res = await fetchConToken(`/torneos/${torneoEditando.id}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        nombre: torneoEditando.nombre,
-        fecha_inicio: torneoEditando.fecha_inicio,
-        fecha_fin: torneoEditando.fecha_fin,
-        estado: torneoEditando.reglas?.estado || 'Activo'
-      })
-    });
-    if (res.ok) {
-      setMensaje('Torneo actualizado.');
-      setTorneoEditando(null);
-      cargarDatos();
-    }
+    const res = await fetchConToken(`/torneos/${torneoEditando.id}`, { method: 'PUT', body: JSON.stringify({ nombre: torneoEditando.nombre, fecha_inicio: torneoEditando.fecha_inicio, fecha_fin: torneoEditando.fecha_fin, estado: torneoEditando.reglas?.estado || 'Activo' }) });
+    if (res.ok) { setMensaje('Torneo actualizado.'); setTorneoEditando(null); cargarDatos(); }
   };
 
   const guardarCredencial = async (e) => {
     e.preventDefault();
     const res = await fetchConToken('/crear-credencial', { method: 'POST', body: JSON.stringify(formCredencial) });
     const data = await res.json();
-    if (res.ok) { setMensaje(data.mensaje); setFormCredencial({ nombre: '', apellido: '', cedula: '', email: '', rol: 'arbitro', equipo_id: '' }); cargarDatos(); }
-    else { alert(data.error); }
+    if (res.ok) { setMensaje(data.mensaje); setFormCredencial({ nombre: '', apellido: '', cedula: '', email: '', rol: 'arbitro', equipo_id: '' }); cargarDatos(); } else { alert(data.error); }
   };
 
   const resetearPasswordOperativo = async (userId, cedula, nombre) => {
     if (!window.confirm(`¿Restablecer contraseña para ${nombre}?`)) return;
     const res = await fetchConToken(`/usuarios/${userId}/reset-password`, { method: 'POST' });
-    const data = await res.json();
-    if (res.ok) alert(data.mensaje); else alert(data.error);
+    const data = await res.json(); if (res.ok) alert(data.mensaje); else alert(data.error);
   };
 
   const reasignarDelegado = async (equipoId, delegadoId) => {
@@ -451,28 +281,88 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
     if (res.ok) { alert('Contraseña actualizada.'); setDebeCambiarPass(false); }
   };
 
-  const reagendarPartido = async (partidoId) => {
-    const nuevaFecha = prompt('Ingresa la nueva fecha y hora (YYYY-MM-DDTHH:MM):');
-    if (!nuevaFecha) return;
-    const res = await fetchConToken(`/partidos/${partidoId}/reagendar`, { method: 'PUT', body: JSON.stringify({ nueva_fecha_hora: nuevaFecha }) });
-    if (res.ok) { alert('Partido Reagendado'); cargarDatos(); }
+  // NUEVA FUNCIÓN PARA CONFIRMAR LA FECHA DEL MODAL
+  const confirmarReagendar = async (e) => {
+    e.preventDefault();
+    const res = await fetchConToken(`/partidos/${modalReagendar.partido.id}/reagendar`, { 
+      method: 'PUT', 
+      body: JSON.stringify({ nueva_fecha_hora: modalReagendar.nuevaFecha }) 
+    });
+    if (res.ok) { 
+      alert('Partido Reagendado Exitosamente'); 
+      setModalReagendar({ visible: false, partido: null, nuevaFecha: '' });
+      cargarDatos(); 
+    }
   };
 
-  const solicitarCambioGanador = async (partidoId, localId, visitaId) => {
-    const ganadorId = prompt(`Ingresa el ID del nuevo equipo ganador (${localId} o ${visitaId}):`);
-    if (!ganadorId) return;
-    const motivo = prompt('Motivo de la modificación (Ej. Descalificación por falta de credenciales):');
-    if (!motivo) return;
-
-    const res = await fetchConToken(`/partidos/${partidoId}/solicitar-cambio-ganador`, { 
-      method: 'POST', body: JSON.stringify({ ganador_propuesto_id: ganadorId, motivo }) 
+  const abrirModalForzarGanador = (partido) => {
+    setModalForzar({ 
+      visible: true, 
+      partido, 
+      ganadorId: partido.equipo_local_id,
+      motivo: '', 
+      password: '' 
     });
+  };
+
+  const confirmarForzarGanador = async (e) => {
+    e.preventDefault();
+    const res = await fetchConToken(`/partidos/${modalForzar.partido.id}/forzar-ganador`, { 
+      method: 'POST', 
+      body: JSON.stringify({ 
+        ganador_id: modalForzar.ganadorId, 
+        motivo: modalForzar.motivo,
+        admin_password: modalForzar.password
+      }) 
+    });
+    
     const data = await res.json();
-    alert(data.mensaje || data.error);
+    if (res.ok) {
+      socketRef.current.emit('notificacion_oficiales_partido', {
+        arbitro_id: modalForzar.partido.arbitro_id,
+        anotador_id: modalForzar.partido.anotador_id,
+        mensaje: `⚠️ El administrador ha forzado el resultado del encuentro: ${modalForzar.partido.local_nombre} vs ${modalForzar.partido.visita_nombre}.`
+      });
+      alert('Resultado forzado correctamente.');
+      setModalForzar({ visible: false, partido: null, ganadorId: '', motivo: '', password: '' });
+      cargarDatos();
+    } else {
+      alert(data.error || 'Contraseña incorrecta o error al procesar.');
+    }
   };
 
   return (
-    <div style={{ fontFamily: 'sans-serif', maxWidth: '1050px', margin: '0 auto', padding: '10px' }}>
+    <div style={{ fontFamily: 'sans-serif', maxWidth: '1000px', margin: '0 auto', padding: '10px' }}>
+      <SistemaMensajeria usuario={usuario} token={token} />
+
+      {/* MODAL REAGENDAR PARTIDO (Con selector dinámico de calendario) */}
+      {modalReagendar.visible && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
+          <div style={{ background: '#fff', padding: '30px', borderRadius: '8px', maxWidth: '450px', width: '90%' }}>
+            <h3 style={{ marginTop: 0 }}>📅 Reagendar Partido</h3>
+            <p style={{ fontSize: '0.9em', color: '#4A5568' }}>{modalReagendar.partido.local_nombre} vs {modalReagendar.partido.visita_nombre}</p>
+            
+            <form onSubmit={confirmarReagendar} style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '15px' }}>
+              <label style={{ fontSize: '0.9em', fontWeight: 'bold' }}>Selecciona la nueva fecha y hora:
+                <input 
+                  type="datetime-local" 
+                  min={ahoraIsoLocal} 
+                  value={modalReagendar.nuevaFecha} 
+                  onChange={e => setModalReagendar({...modalReagendar, nuevaFecha: e.target.value})} 
+                  required 
+                  style={{ width: '100%', padding: '10px', marginTop: '5px', borderRadius: '4px', border: '1px solid #CBD5E0' }} 
+                />
+              </label>
+              
+              <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+                <button type="submit" style={{ flex: 1, background: '#3182CE', color: 'white', border: 'none', padding: '10px', borderRadius: '4px' }}>Confirmar Fecha</button>
+                <button type="button" onClick={() => setModalReagendar({ visible: false, partido: null, nuevaFecha: '' })} style={{ flex: 1, padding: '10px', borderRadius: '4px' }}>Cancelar</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {debeCambiarPass && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
           <div style={{ background: '#fff', padding: '30px', borderRadius: '8px', maxWidth: '400px', width: '90%' }}>
@@ -480,6 +370,37 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
             <form onSubmit={cambiarClaveObligatoria} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <input type="password" placeholder="Nueva Contraseña (mín 6 chars)" value={nuevaClave} onChange={e => setNuevaClave(e.target.value)} required minLength={6} />
               <button type="submit">Actualizar Contraseña</button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL FORZAR GANADOR */}
+      {modalForzar.visible && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 2000 }}>
+          <div style={{ background: '#fff', padding: '30px', borderRadius: '8px', maxWidth: '450px', width: '90%' }}>
+            <h3 style={{ color: '#E53E3E', marginTop: 0 }}>⚠️ Forzar Resultado del Partido</h3>
+            <p style={{ fontSize: '0.9em', color: '#4A5568' }}>{modalForzar.partido.local_nombre} vs {modalForzar.partido.visita_nombre}</p>
+            
+            <form onSubmit={confirmarForzarGanador} style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '15px' }}>
+              <label>Seleccionar Equipo Ganador:
+                <select 
+                  value={modalForzar.ganadorId} 
+                  onChange={e => setModalForzar({...modalForzar, ganadorId: e.target.value})}
+                  style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+                >
+                  <option value={modalForzar.partido.equipo_local_id}>{modalForzar.partido.local_nombre}</option>
+                  <option value={modalForzar.partido.equipo_visita_id}>{modalForzar.partido.visita_nombre}</option>
+                </select>
+              </label>
+              
+              <input type="text" placeholder="Motivo técnico de la modificación" value={modalForzar.motivo} onChange={e => setModalForzar({...modalForzar, motivo: e.target.value})} required style={{ padding: '8px' }} />
+              <input type="password" placeholder="Ingresa tu contraseña de Admin" value={modalForzar.password} onChange={e => setModalForzar({...modalForzar, password: e.target.value})} required style={{ padding: '8px' }} />
+              
+              <div style={{ display: 'flex', gap: '10px' }}>
+                <button type="submit" style={{ flex: 1, background: '#E53E3E', color: 'white', border: 'none', padding: '10px' }}>Forzar Ganador</button>
+                <button type="button" onClick={() => setModalForzar({...modalForzar, visible: false})} style={{ flex: 1, padding: '10px' }}>Cancelar</button>
+              </div>
             </form>
           </div>
         </div>
@@ -1303,7 +1224,7 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
                         <td style={{ border: '1px solid #ddd', padding: '8px' }}><strong>{ac.nombre}</strong></td>
                         <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{ac.total_puntos}</td>
                         <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{ac.torneos_jugados}</td>
-                        <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{ac.torneos_jugados} / {ac.total_torneos_temporada} (≥ 60%)</td>
+                        <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{ac.torneos_jugados} / {ac.total_torneos_temporada} (&ge; 60%)</td>
                       </tr>
                     ))
                   )}
@@ -1365,26 +1286,64 @@ export default function AdminLigaDashboard({ usuario, cerrarSesion }) {
         </div>
       )}
 
-      {/* HISTORIAL */}
+      {/* HISTORIAL ACTUALIZADO Y DIVIDIDO */}
       {pestana === 'historial' && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
-          <thead><tr style={{ background: '#eee' }}><th style={{ padding: '8px' }}>Fecha</th><th style={{ padding: '8px' }}>Torneo</th><th style={{ padding: '8px' }}>Encuentro</th><th style={{ padding: '8px' }}>Marcador</th><th style={{ padding: '8px' }}>Acciones</th></tr></thead>
-          <tbody>
-            {partidos.map(p => (
-              <tr key={p.id}>
-                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{new Date(p.fecha_hora).toLocaleDateString()}</td>
-                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.torneo_nombre}</td>
-                <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.local_nombre || 'Por definir'} vs {p.visita_nombre || 'Por definir'}</td>
-                <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{p.marcador_local !== null ? `${p.marcador_local} - ${p.marcador_visita}` : 'Pendiente'}</td>
-                <td style={{ border: '1px solid #ddd', padding: '8px' }}>
-                  {p.estado === 'Suspendido' && <button onClick={() => reagendarPartido(p.id)}>📅 Reagendar</button>}
-                  {p.estado === 'Finalizado' && <button onClick={() => solicitarCambioGanador(p.id, p.equipo_local_id, p.equipo_visita_id)}>⚠️ Forzar Ganador</button>}
-                </td>
+        <div>
+          <h3>🚨 Partidos Suspendidos (Requieren Acción)</h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em', marginBottom: '30px' }}>
+            <thead>
+              <tr style={{ background: '#FED7D7', color: '#C53030' }}>
+                <th style={{ padding: '8px' }}>Fecha Original</th>
+                <th style={{ padding: '8px' }}>Torneo</th>
+                <th style={{ padding: '8px' }}>Encuentro</th>
+                <th style={{ padding: '8px' }}>Acciones</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {partidos.filter(p => p.estado === 'Suspendido').length === 0 ? (
+                <tr><td colSpan={4} style={{ textAlign: 'center', padding: '15px', color: '#666' }}>No hay partidos suspendidos en este momento.</td></tr>
+              ) : partidos.filter(p => p.estado === 'Suspendido').map(p => (
+                <tr key={p.id}>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{new Date(p.fecha_hora).toLocaleDateString()}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.torneo_nombre}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.local_nombre || 'Por definir'} vs {p.visita_nombre || 'Por definir'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>
+                    <button onClick={() => setModalReagendar({ visible: true, partido: p, nuevaFecha: p.fecha_hora.slice(0, 16) })} style={{ background: '#3182CE', color: '#FFF', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer' }}>📅 Reagendar</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h3>📜 Historial de Partidos Finalizados</h3>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9em' }}>
+            <thead>
+              <tr style={{ background: '#eee' }}>
+                <th style={{ padding: '8px' }}>Fecha</th>
+                <th style={{ padding: '8px' }}>Torneo</th>
+                <th style={{ padding: '8px' }}>Encuentro</th>
+                <th style={{ padding: '8px' }}>Marcador</th>
+                <th style={{ padding: '8px' }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {partidos.filter(p => p.estado === 'Finalizado').map(p => (
+                <tr key={p.id}>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{new Date(p.fecha_hora).toLocaleDateString()}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.torneo_nombre}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px' }}>{p.local_nombre} vs {p.visita_nombre}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px', textAlign: 'center' }}>{p.marcador_local !== null ? `${p.marcador_local} - ${p.marcador_visita}` : 'Pendiente'}</td>
+                  <td style={{ border: '1px solid #ddd', padding: '8px', display: 'flex', gap: '5px' }}>
+                    <button onClick={() => window.open(`/?vista=puntajes&partido_id=${p.id}`, '_blank')} style={{ background: '#38A169', color: '#FFF', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>📄 Ver Acta / Descargar PDF</button>
+                    <button onClick={() => abrirModalForzarGanador(p)} style={{ background: '#E53E3E', color: '#FFF', border: 'none', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer' }}>⚠️ Forzar Ganador</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
     </div>
   );
 }

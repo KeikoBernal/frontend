@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
-import PlanillaPublica from './PlanillaPublica';
+import PlanillaUniversal from './PlanillaUniversal';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:4000';
@@ -9,10 +9,10 @@ export default function PantallaPuntajes() {
   const [partidosEnVivo, setPartidosEnVivo] = useState([]);
   const [partidoSeleccionado, setPartidoSeleccionado] = useState(null);
   
-  // Estados para la nómina y planilla en vivo
   const [jugadoresLocal, setJugadoresLocal] = useState([]);
   const [jugadoresVisita, setJugadoresVisita] = useState([]);
   const [efectividadJugadores, setEfectividadJugadores] = useState({});
+  const [manualStats, setManualStats] = useState({});
   const [puntosPorManoLocal, setPuntosPorManoLocal] = useState(Array(20).fill(''));
   const [puntosPorManoVisita, setPuntosPorManoVisita] = useState(Array(20).fill(''));
 
@@ -26,52 +26,44 @@ export default function PantallaPuntajes() {
     if (partidoIdUrl) {
       cargarPartidoEspecifico(partidoIdUrl);
     } else {
-      fetch(`${API_URL}/partidos-activos`)
+      fetch(`${API_URL}/publico/partidos-activos`) 
         .then(res => res.json())
         .then(data => {
           setPartidosEnVivo(Array.isArray(data) ? data : []);
           setCargando(false);
-        });
+        }).catch(() => setCargando(false));
     }
-
     return () => socketRef.current?.disconnect();
   }, []);
 
   const cargarPartidoEspecifico = (id) => {
     setCargando(true);
-    
-    // Conectar WebSocket como Espectador
     socketRef.current = io(SOCKET_URL);
     socketRef.current.emit('unirse_partido', id);
     
     socketRef.current.on('actualizar_planilla', (data) => {
       if (data.efectividad) setEfectividadJugadores(data.efectividad);
+      if (data.manualStats) setManualStats(data.manualStats);
       if (data.tantosLocal) setPuntosPorManoLocal(data.tantosLocal);
       if (data.tantosVisita) setPuntosPorManoVisita(data.tantosVisita);
-      if (data.hora_inicio) setPartidoSeleccionado(prev => prev ? { ...prev, hora_inicio: data.hora_inicio } : null);
+      if (data.estadoPartido) setPartidoSeleccionado(prev => prev ? { ...prev, estado: data.estadoPartido } : null);
     });
 
-    // 1. Cargar Metadatos del Partido (Se puede usar un endpoint público existente o la misma consulta)
-    fetch(`${API_URL}/partidos/${id}`)
+    fetch(`${API_URL}/publico/partidos/${id}`) 
       .then(res => res.json())
       .then(data => {
-        if (data && !data.error) setPartidoSeleccionado(data);
-        
-        // 2. Cargar Nómina Pública
-        return fetch(`${API_URL}/partidos/${id}/nomina-publica`);
-      })
-      .then(res => res.json())
-      .then(nomina => {
-        if (nomina && partidoSeleccionado) {
-          setJugadoresLocal(nomina.filter(j => j.equipo_id === partidoSeleccionado.equipo_local_id));
-          setJugadoresVisita(nomina.filter(j => j.equipo_id === partidoSeleccionado.equipo_visita_id));
+        if (data && !data.error) {
+          setPartidoSeleccionado(data);
+          return fetch(`${API_URL}/publico/partidos/${id}/nomina`)
+            .then(res => res.json())
+            .then(nomina => {
+              setJugadoresLocal(nomina.filter(j => j.equipo_id === data.equipo_local_id));
+              setJugadoresVisita(nomina.filter(j => j.equipo_id === data.equipo_visita_id));
+              setCargando(false);
+            });
         }
         setCargando(false);
-      })
-      .catch(err => {
-        console.error('Error cargando partido público:', err);
-        setCargando(false);
-      });
+      }).catch(() => setCargando(false));
   };
 
   if (cargando) return <div style={{ padding: '40px', textAlign: 'center', color: '#FFF', background: '#1A202C', minHeight: '100vh' }}><h3>🔄 Sintonizando en vivo...</h3></div>;
@@ -84,27 +76,30 @@ export default function PantallaPuntajes() {
         <div>
           <h3>Partidos Activos:</h3>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-            {partidosEnVivo.map(p => (
-              <button key={p.id} onClick={() => cargarPartidoEspecifico(p.id)} style={{ padding: '20px', background: '#2D3748', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
-                <strong>{p.local_nombre} vs {p.visita_nombre}</strong>
+            {partidosEnVivo.length === 0 ? <p>No hay partidos activos en este momento.</p> : partidosEnVivo.map(p => (
+              <button key={p.id} onClick={() => window.location.href=`/?vista=puntajes&partido_id=${p.id}`} style={{ padding: '20px', background: '#2D3748', color: '#FFF', border: 'none', borderRadius: '6px', cursor: 'pointer', textAlign: 'left' }}>
+                <strong>{p.local_nombre} vs {p.visita_nombre}</strong><br/><small style={{ color: '#CBD5E0' }}>Sede: {p.sede_nombre}</small>
               </button>
             ))}
           </div>
         </div>
       ) : (
         <div style={{ background: '#FFF', color: '#000', borderRadius: '8px', overflow: 'hidden' }}>
-          
-          <PlanillaPublica 
+          {/* Se llama al componente PlanillaUniversal pasandole el rol='espectador' para deshabilitar clicks */}
+          <PlanillaUniversal 
+            rol="espectador"
             estadoPartido={partidoSeleccionado.estado}
+            partidoId={partidoSeleccionado.id}
             datosPartido={{
+              arbitro: partidoSeleccionado.arbitro_nombre, anotador: partidoSeleccionado.anotador_nombre,
+              capitanLocal: partidoSeleccionado.capitan_local_nombre, capitanVisita: partidoSeleccionado.capitan_visita_nombre,
               localNombre: partidoSeleccionado.local_nombre, visitaNombre: partidoSeleccionado.visita_nombre,
-              horaInicio: partidoSeleccionado.hora_inicio, fecha: partidoSeleccionado.fecha_hora ? new Date(partidoSeleccionado.fecha_hora).toLocaleDateString() : ''
+              horaInicio: partidoSeleccionado.hora_inicio, horaFinal: partidoSeleccionado.hora_final,
+              fecha: partidoSeleccionado.fecha_hora ? new Date(partidoSeleccionado.fecha_hora).toLocaleDateString() : ''
             }}
-            jugadoresLocal={jugadoresLocal}
-            jugadoresVisita={jugadoresVisita}
-            efectividadJugadores={efectividadJugadores}
-            puntosPorManoLocal={puntosPorManoLocal}
-            puntosPorManoVisita={puntosPorManoVisita}
+            jugadoresLocal={jugadoresLocal} jugadoresVisita={jugadoresVisita}
+            efectividadJugadores={efectividadJugadores} manualStats={manualStats}
+            puntosPorManoLocal={puntosPorManoLocal} puntosPorManoVisita={puntosPorManoVisita}
           />
         </div>
       )}
